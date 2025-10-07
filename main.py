@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 # ==========================
-# Funções auxiliares
+# Funções auxiliares (GERAIS)
 # ==========================
 
 def _norm(s: str) -> str:
@@ -23,6 +23,7 @@ def _norm(s: str) -> str:
     return s.lower()
 
 def br_to_float(s: str) -> float:
+    """Converte '12.345,67' -> 12345.67. Vazio/erro -> 0.0"""
     if not s:
         return 0.0
     s = s.replace('.', '').replace(',', '.')
@@ -31,14 +32,150 @@ def br_to_float(s: str) -> float:
     except:
         return 0.0
 
+def float_to_br(x: float) -> str:
+    """Converte 12345.67 -> '12.345,67' (PT-BR)."""
+    try:
+        s = f"{float(x):,.2f}"          # '12,345.67'
+        s = s.replace(",", "X")         # '12X345.67'
+        s = s.replace(".", ",")         # '12X345,67'
+        s = s.replace("X", ".")         # '12.345,67'
+        return s
+    except:
+        return ""
+
 # ==========================
-# Lógica de extração
+# Helpers específicos da Seção 5 - COMPARATIVO DOS VALORES
+# ==========================
+
+HEADER_PATTERN = r"5\.\s*Comparativo dos Valores"
+NEXT_HEADER    = r"\n\s*6\.\s*Observações|\Z"
+NUM_PATTERN    = r"(\d{1,3}(?:\.\d{3})*,\d{2})"
+DATE_PATTERN   = r"\d{2}/\d{2}/\d{4}"
+
+def extract_section5_from_text(full_text: str) -> str:
+    """Pega o texto entre '5. Comparativo dos Valores' e '6. Observações'."""
+    m = re.search(HEADER_PATTERN + r"(.*?)" + NEXT_HEADER, full_text, flags=re.S)
+    return (m.group(1) if m else "").strip()
+
+def normalize_lines(section_text: str) -> list[str]:
+    """Quebra em linhas e compacta espaços."""
+    lines = [
+        re.sub(r"\s+", " ", ln).strip()
+        for ln in section_text.splitlines()
+        if ln.strip()
+    ]
+    return lines
+
+def parse_table(lines: list[str]) -> pd.DataFrame:
+    """
+    Constrói a tabela com colunas:
+      Data | Valores (R$) | Principal (70%) | Contratual (30%) | Sucumbência | Total
+    """
+    rows = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+
+        # pula cabeçalhos
+        if ln.lower().startswith("data valores") or "(70%)" in ln or "(30%)" in ln:
+            i += 1
+            continue
+
+        if re.match(DATE_PATTERN, ln):  # caso com data dd/mm/yyyy
+            date = ln.split()[0]
+            rest = ln[len(date):].strip()
+
+            # captura todos os números na linha
+            nums = re.findall(NUM_PATTERN, rest)
+
+            # descrição = texto antes do 1º número (se houver)
+            first_num_match = re.search(NUM_PATTERN, rest)
+            desc = rest[:first_num_match.start()].strip() if first_num_match else rest.strip()
+
+            # Preenche da ESQUERDA para DIREITA
+            principal = contratual = sucumbencia = total = "0,00"
+
+            if len(nums) >= 1:
+                principal = nums[0]  # Primeiro número -> Principal (70%)
+            if len(nums) >= 2:
+                contratual = nums[1]  # Segundo número -> Contratual (30%)
+            if len(nums) >= 3:
+                sucumbencia = nums[2]  # Terceiro número -> Sucumbência
+            if len(nums) >= 4:
+                total = nums[3]  # Quarto número -> Total
+
+            rows.append([date, desc, principal, contratual, sucumbencia, total])
+            i += 1
+            continue
+
+        if ln.startswith("Aguardando"):  # bloco "Aguardando ..."
+            desc = ln
+            j = i + 1
+            while j < len(lines) and not (
+                re.match(DATE_PATTERN, lines[j]) or lines[j].startswith("Aguardando")
+            ):
+                desc += " " + lines[j]
+                j += 1
+            desc_clean = desc.replace("Aguardando ", "", 1)
+            rows.append(["Aguardando", desc_clean, "0,00", "0,00", "0,00", "0,00"])
+            i = j
+            continue
+
+        # fallback
+        rows.append([None, ln, "0,00", "0,00", "0,00", "0,00"])
+        i += 1
+
+    df = pd.DataFrame(
+        rows,
+        columns=["Data", "Valores (R$)", "Principal (70%)", "Contratual (30%)", "Sucumbência", "Total"]
+    )
+    return df
+
+def filter_most_recent(df: pd.DataFrame) -> pd.DataFrame:
+    """Retorna um DF com apenas a linha da data mais recente (ignora 'Aguardando')."""
+    # Filtra apenas linhas com datas válidas
+    valid_dates = df[df["Data"].str.match(DATE_PATTERN, na=False)].copy()
+    
+    if valid_dates.empty:
+        return df.iloc[0:0].copy()
+    
+    # Converte para datetime e pega a mais recente
+    valid_dates["Data_dt"] = pd.to_datetime(valid_dates["Data"], format="%d/%m/%Y", errors="coerce")
+    idx = valid_dates["Data_dt"].idxmax()
+    
+    return df.loc[[idx]].reset_index(drop=True)
+
+def processar_secao5_comparativo(texto: str):
+    """Processa a seção 5 do PDF e retorna os dados do comparativo"""
+    section5_text = extract_section5_from_text(texto)
+    
+    if not section5_text:
+        return "0,00", "0,00", "0,00"
+    
+    lines = normalize_lines(section5_text)
+    df_sec5 = parse_table(lines)
+    df_latest = filter_most_recent(df_sec5)
+
+    if not df_latest.empty:
+        contratual_txt = df_latest.at[0, "Contratual (30%)"] or "0,00"
+        sucumb_txt = df_latest.at[0, "Sucumbência"] or "0,00"
+
+        contratual_val = br_to_float(contratual_txt)
+        sucumb_val = br_to_float(sucumb_txt)
+        total_val = contratual_val + sucumb_val
+
+        return contratual_txt, sucumb_txt, float_to_br(total_val)
+    
+    return "0,00", "0,00", "0,00"
+
+# ==========================
+# Lógica de extração PRINCIPAL
 # ==========================
 
 def extrair_dados_pdf(caminho_pdf):
     dados = {
         "Arquivo": Path(caminho_pdf).name,
-        "Nome": "",                  # <<< agora chama Nome
+        "Nome": "",
         "Número do processo": "",
         "Data encerramento": "",
         "CONTRATUAL": "",
@@ -47,11 +184,12 @@ def extrair_dados_pdf(caminho_pdf):
     }
 
     with pdfplumber.open(caminho_pdf) as pdf:
+        # — 1) extrai texto de todas as páginas —
         texto = ""
         for page in pdf.pages:
             texto += (page.extract_text() or "") + "\n"
 
-        # ---------- Nome (Parte Autora) ----------
+        # — 2) Nome (Parte Autora) —
         m_aut = re.search(
             r"parte\s+autor(?:a|o)(?:\s*\(o\))?\s*[:\-–]?\s*([^\n\r|]+)",
             texto, flags=re.IGNORECASE
@@ -84,12 +222,12 @@ def extrair_dados_pdf(caminho_pdf):
                     if achou_pa:
                         break
 
-        # ---------- Número do processo ----------
+        # — 3) Número do processo —
         mproc = re.search(r"(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})", texto)
         if mproc:
             dados["Número do processo"] = mproc.group(1)
 
-        # ---------- Data de Encerramento ----------
+        # — 4) Data de Encerramento —
         m = re.search(r"(\d{2}[/-]\d{2}[/-]\d{4}).{0,60}Encerramento\s+com\s+a\s+Libera",
                       texto, flags=re.IGNORECASE)
         if m:
@@ -100,26 +238,11 @@ def extrair_dados_pdf(caminho_pdf):
             if m:
                 dados["Data encerramento"] = m.group(1)
 
-        # ---------- Previsto no Laudo ----------
-        achou = False
-        for page in pdf.pages:
-            tables = page.extract_tables() or []
-            for table in tables:
-                for row in table:
-                    if row and any("Previstos no Laudo" in str(cell) for cell in row):
-                        dados["CONTRATUAL"]  = row[2] if len(row) > 2 else ""
-                        dados["Sucumbencia"] = row[3] if len(row) > 3 else ""
-
-                        contratual = br_to_float(dados["CONTRATUAL"])
-                        sucumb = br_to_float(dados["Sucumbencia"])
-                        total = contratual + sucumb
-                        dados["Total"] = (
-                            f"{total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                        )
-                        achou = True
-                        break
-                if achou:
-                    break
+        # — 5) Seção 5: Comparativo dos Valores —
+        contratual, sucumbencia, total = processar_secao5_comparativo(texto)
+        dados["CONTRATUAL"] = contratual
+        dados["Sucumbencia"] = sucumbencia
+        dados["Total"] = total
 
     return dados
 
@@ -160,7 +283,7 @@ def gerar_excel_em_arquivo_lote(result_rows, caminho_saida):
     df = pd.DataFrame(result_rows)
     colunas_excel = [
         "Arquivo",
-        "Nome",                    # <<< aparece no Excel
+        "Nome",
         "Número do processo",
         "Data Encerramento",
         "CONTRATUAL",
