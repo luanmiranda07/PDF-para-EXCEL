@@ -1,5 +1,4 @@
 import os
-import glob
 import re
 import unicodedata
 from pathlib import Path
@@ -359,15 +358,27 @@ class App(tk.Tk):
         folder = filedialog.askdirectory(title="Selecionar pasta")
         if not folder:
             return
-        pattern = "**/*.pdf" if self.recursive_var.get() else "*.pdf"
-        encontrados = glob.glob(os.path.join(folder, pattern), recursive=self.recursive_var.get())
+        folder_path = Path(folder)
+        recursive = self.recursive_var.get()
+
+        if recursive:
+            encontrados = [str(p) for p in folder_path.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"]
+        else:
+            encontrados = [str(p) for p in folder_path.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"]
+
         if not encontrados:
             messagebox.showinfo("Info", "Nenhum arquivo .pdf encontrado.")
             return
+
+        before_count = len(self.current_files)
         for p in encontrados:
             if p not in self.current_files:
                 self.current_files.append(p)
-        self.status_var.set(f"{len(encontrados)} arquivo(s) da pasta adicionados. Total: {len(self.current_files)}.")
+        added_count = len(self.current_files) - before_count
+        self.status_var.set(
+            f"{added_count} arquivo(s) adicionados da pasta. "
+            f"Encontrados: {len(encontrados)}. Total: {len(self.current_files)}."
+        )
 
     def on_process(self):
         if not self.current_files:
