@@ -5,8 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11.9"
 dependencies = [
-    "document>=1.0",
-    "fitz>=0.0.1.dev2",
+    "cx-freeze>=8.4.1",
     "openpyxl>=3.1.5",
     "pandas>=2.3.2",
     "pdf2image>=1.17.0",
@@ -16,5 +15,6 @@ dependencies = [
     "pypdf2>=3.0.1",
     "pytesseract>=0.3.13",
     "python-docx>=1.2.0",
+    "tabula>=1.0.5",
     "ttkbootstrap>=1.14.2",
 ]
