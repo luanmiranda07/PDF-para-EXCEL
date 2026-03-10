@@ -21,6 +21,22 @@ def _norm(s: str) -> str:
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     return s.lower()
 
+def _norm_nome_pdf(nome: str) -> str:
+    nome = _norm(nome)
+    nome = re.sub(r"[^a-z0-9]+", " ", nome)
+    return re.sub(r"\s+", " ", nome).strip()
+
+def nome_pdf_interessa(nome_arquivo: str) -> bool:
+    nome = _norm_nome_pdf(Path(nome_arquivo).stem)
+    nomes_alvo = [
+        "01 relatorio de conformidade rpv",
+        "01 relatorio de conformidade preca",
+        "relatorio de conformidade",
+        "conformidade",
+        "relatorio",
+    ]
+    return any(alvo in nome for alvo in nomes_alvo)
+
 def br_to_float(s: str) -> float:
     """Converte '12.345,67' -> 12345.67. Vazio/erro -> 0.0"""
     if not s:
@@ -362,12 +378,12 @@ class App(tk.Tk):
         recursive = self.recursive_var.get()
 
         if recursive:
-            encontrados = [str(p) for p in folder_path.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"]
+            encontrados = [str(p) for p in folder_path.rglob("*.pdf") if nome_pdf_interessa(p.name)]
         else:
-            encontrados = [str(p) for p in folder_path.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"]
+            encontrados = [str(p) for p in folder_path.iterdir() if p.is_file() and p.suffix.lower() == ".pdf" and nome_pdf_interessa(p.name)]
 
         if not encontrados:
-            messagebox.showinfo("Info", "Nenhum arquivo .pdf encontrado.")
+            messagebox.showinfo("Info", "Nenhum PDF com nome parecido com Relatório/Conformidade/RPV/PRECA foi encontrado.")
             return
 
         before_count = len(self.current_files)
